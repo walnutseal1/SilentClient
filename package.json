@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "SillyTavern plugin that maintains a ghost client when no real client is active",
   "main": "index.js",
+  "scripts": {
+    "postinstall": "node node_modules/puppeteer/install.mjs"
+  },
   "keywords": [
     "sillytavern",
     "plugin",
