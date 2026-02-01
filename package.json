@@ -1,0 +1,20 @@
+{
+  "name": "sillytavern-silent-client",
+  "version": "1.0.0",
+  "description": "SillyTavern plugin that maintains a ghost client when no real client is active",
+  "main": "index.js",
+  "keywords": [
+    "sillytavern",
+    "plugin",
+    "ghost-client",
+    "headless"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "puppeteer": "^21.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
