@@ -1,9 +1,7 @@
 (function () {
-    // ---- HARD SINGLETON GUARD ----
     if (window.__silentClientInitialized) return;
     window.__silentClientInitialized = true;
 
-    // ---- IMMEDIATE GHOST EXIT (RACE-SAFE) ----
     if (window.isGhostClient === true) {
         console.log('[SilentClient] Ghost session detected. Heartbeat suppressed.');
         return;
