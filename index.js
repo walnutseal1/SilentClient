@@ -13,6 +13,8 @@ class SilentClient {
         this.transitionTimeout = null;
         this.pendingState = null;
         this.transitionToken = null;
+        this.spawning = false;
+        this.killing = false;
     }
 
     async init() {
@@ -21,7 +23,6 @@ class SilentClient {
     }
 
     updateHeartbeat(req) {
-        // ---- HARD SERVER-SIDE GHOST REJECTION ----
         if (req.headers['x-ghost-client']) return;
         this.lastHeartbeat = Date.now();
     }
@@ -68,59 +69,81 @@ class SilentClient {
                 }
 
                 this.state = targetState;
+            } catch (err) {
+                console.error('[SilentClient] Transition error:', err.message);
+                this.state = 'NO_CLIENT';
             } finally {
                 this.pendingState = null;
+                this.transitionToken = null;
             }
         }, DEBOUNCE_TIME);
     }
 
     async spawnGhost() {
-        if (this.ghostBrowser) return;
+        if (this.ghostBrowser || this.spawning) return;
 
-        console.log('[SilentClient] Spawning Ghost Browser...');
-        this.ghostBrowser = await puppeteer.launch({
-            headless: 'new',
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--mute-audio']
-        });
+        this.spawning = true;
+        let browser = null;
 
-        const page = await this.ghostBrowser.newPage();
-
-        // ---- INJECT BEFORE ANY SCRIPT ----
-        await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(window, 'isGhostClient', {
-                value: true,
-                writable: false,
-                configurable: false
+        try {
+            console.log('[SilentClient] Spawning Ghost Browser...');
+            browser = await puppeteer.launch({
+                headless: 'new',
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--mute-audio']
             });
 
-            // Mark all requests
-            const originalFetch = window.fetch;
-            window.fetch = function (...args) {
-                args[1] = args[1] || {};
-                args[1].headers = {
-                    ...(args[1].headers || {}),
-                    'x-ghost-client': '1'
+            const page = await browser.newPage();
+
+            await page.evaluateOnNewDocument(() => {
+                Object.defineProperty(window, 'isGhostClient', {
+                    value: true,
+                    writable: false,
+                    configurable: false
+                });
+
+                const originalFetch = window.fetch;
+                window.fetch = function (...args) {
+                    args[1] = args[1] || {};
+                    args[1].headers = {
+                        ...(args[1].headers || {}),
+                        'x-ghost-client': '1'
+                    };
+                    return originalFetch.apply(this, args);
                 };
-                return originalFetch.apply(this, args);
-            };
-        });
+            });
 
-        const url = `http://localhost:${this.serverPort}`;
-        await page.goto(url, { waitUntil: 'networkidle2' });
+            const url = `http://localhost:${this.serverPort}`;
+            await page.goto(url, { waitUntil: 'networkidle2' });
 
-        console.log('[SilentClient] Ghost Active.');
+            this.ghostBrowser = browser;
+            console.log('[SilentClient] Ghost Active.');
+        } catch (err) {
+            console.error('[SilentClient] Spawn error:', err.message);
+            if (browser) {
+                try {
+                    await browser.close();
+                } catch {}
+            }
+            throw err;
+        } finally {
+            this.spawning = false;
+        }
     }
 
     async killGhost() {
-        if (!this.ghostBrowser) return;
+        if (!this.ghostBrowser || this.killing) return;
+
+        this.killing = true;
+        const browser = this.ghostBrowser;
+        this.ghostBrowser = null;
 
         try {
-            await this.ghostBrowser.close();
+            await browser.close();
             console.log('[SilentClient] Ghost Terminated.');
         } catch (err) {
             console.error('[SilentClient] Kill Error:', err.message);
         } finally {
-            this.ghostBrowser = null;
+            this.killing = false;
         }
     }
 }
