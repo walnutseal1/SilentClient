@@ -1,18 +1,18 @@
 const puppeteer = require('puppeteer');
-const path = require('path');
 
-// Constants
-const HEARTBEAT_TIMEOUT = 10000; // Increased to 10s for stability
+const HEARTBEAT_TIMEOUT = 10000;
 const CHECK_INTERVAL = 2000;
 const DEBOUNCE_TIME = 3000;
 
 class SilentClient {
     constructor(serverPort = 8000) {
         this.ghostBrowser = null;
-        this.state = 'NO_CLIENT'; 
-        this.lastHeartbeat = 0; // IN-MEMORY TRACKING
+        this.state = 'NO_CLIENT';
+        this.lastHeartbeat = 0;
         this.serverPort = serverPort;
         this.transitionTimeout = null;
+        this.pendingState = null;
+        this.transitionToken = null;
     }
 
     async init() {
@@ -20,7 +20,9 @@ class SilentClient {
         this.startMonitor();
     }
 
-    updateHeartbeat() {
+    updateHeartbeat(req) {
+        // ---- HARD SERVER-SIDE GHOST REJECTION ----
+        if (req.headers['x-ghost-client']) return;
         this.lastHeartbeat = Date.now();
     }
 
@@ -29,12 +31,14 @@ class SilentClient {
     }
 
     startMonitor() {
-        setInterval(async () => {
+        setInterval(() => {
             const alive = this.isRealClientAlive();
 
             if (alive && (this.state === 'GHOST_ACTIVE' || this.state === 'NO_CLIENT')) {
                 this.requestStateChange('REAL_ACTIVE');
-            } else if (!alive && (this.state === 'REAL_ACTIVE' || this.state === 'NO_CLIENT')) {
+            }
+
+            if (!alive && (this.state === 'REAL_ACTIVE' || this.state === 'NO_CLIENT')) {
                 this.requestStateChange('GHOST_ACTIVE');
             }
         }, CHECK_INTERVAL);
@@ -42,50 +46,79 @@ class SilentClient {
 
     requestStateChange(targetState) {
         if (this.state === 'TRANSITIONING' && this.pendingState === targetState) return;
-        
+
         clearTimeout(this.transitionTimeout);
+
         this.state = 'TRANSITIONING';
         this.pendingState = targetState;
 
+        const token = Symbol();
+        this.transitionToken = token;
+
         this.transitionTimeout = setTimeout(async () => {
-            if (targetState === 'GHOST_ACTIVE' && !this.isRealClientAlive()) {
-                await this.spawnGhost();
-            } else if (targetState === 'REAL_ACTIVE' && this.isRealClientAlive()) {
-                await this.killGhost();
+            if (this.transitionToken !== token) return;
+
+            try {
+                if (targetState === 'GHOST_ACTIVE' && !this.isRealClientAlive()) {
+                    await this.spawnGhost();
+                }
+
+                if (targetState === 'REAL_ACTIVE' && this.isRealClientAlive()) {
+                    await this.killGhost();
+                }
+
+                this.state = targetState;
+            } finally {
+                this.pendingState = null;
             }
-            this.state = targetState;
         }, DEBOUNCE_TIME);
     }
 
     async spawnGhost() {
         if (this.ghostBrowser) return;
-        try {
-            console.log('[SilentClient] Spawning Ghost Browser...');
-            this.ghostBrowser = await puppeteer.launch({
-                headless: "new",
-                handleSIGINT: true,
-                handleSIGTERM: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--mute-audio']
+
+        console.log('[SilentClient] Spawning Ghost Browser...');
+        this.ghostBrowser = await puppeteer.launch({
+            headless: 'new',
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--mute-audio']
+        });
+
+        const page = await this.ghostBrowser.newPage();
+
+        // ---- INJECT BEFORE ANY SCRIPT ----
+        await page.evaluateOnNewDocument(() => {
+            Object.defineProperty(window, 'isGhostClient', {
+                value: true,
+                writable: false,
+                configurable: false
             });
-            const page = await this.ghostBrowser.newPage();
-            await page.evaluateOnNewDocument(() => { window.isGhostClient = true; });
-            
-            const url = `http://localhost:${this.serverPort}`;
-            await page.goto(url, { waitUntil: 'networkidle2' });
-            console.log('[SilentClient] Ghost Active.');
-        } catch (err) {
-            console.error('[SilentClient] Spawn Failed:', err.message);
-            this.ghostBrowser = null;
-        }
+
+            // Mark all requests
+            const originalFetch = window.fetch;
+            window.fetch = function (...args) {
+                args[1] = args[1] || {};
+                args[1].headers = {
+                    ...(args[1].headers || {}),
+                    'x-ghost-client': '1'
+                };
+                return originalFetch.apply(this, args);
+            };
+        });
+
+        const url = `http://localhost:${this.serverPort}`;
+        await page.goto(url, { waitUntil: 'networkidle2' });
+
+        console.log('[SilentClient] Ghost Active.');
     }
 
     async killGhost() {
         if (!this.ghostBrowser) return;
+
         try {
             await this.ghostBrowser.close();
             console.log('[SilentClient] Ghost Terminated.');
         } catch (err) {
-            console.error('[SilentClient] Kill Error:', err);
+            console.error('[SilentClient] Kill Error:', err.message);
         } finally {
             this.ghostBrowser = null;
         }
@@ -100,13 +133,27 @@ async function init(router) {
     await instance.init();
 
     router.post('/heartbeat', (req, res) => {
-        instance.updateHeartbeat();
-        res.json({ success: true, ghosting: instance.state === 'GHOST_ACTIVE' });
+        instance.updateHeartbeat(req);
+        res.json({
+            success: true,
+            ghosting: instance.state === 'GHOST_ACTIVE'
+        });
     });
 
     router.get('/status', (req, res) => {
-        res.json({ state: instance.state, realClientAlive: instance.isRealClientAlive() });
+        res.json({
+            state: instance.state,
+            realClientAlive: instance.isRealClientAlive()
+        });
+    });
+
+    process.on('SIGTERM', async () => {
+        await instance?.killGhost();
+        process.exit(0);
     });
 }
 
-module.exports = { init, exit: () => instance?.killGhost() };
+module.exports = {
+    init,
+    exit: () => instance?.killGhost()
+};
