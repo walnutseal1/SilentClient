@@ -88,10 +88,18 @@ class SilentClient {
         try {
             console.log('[SilentClient] Spawning Ghost Browser...');
             browser = await puppeteer.launch({
-                headless: 'new',
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--mute-audio']
+                headless: "new",
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-gpu',
+                    '--disable-dev-shm-usage',
+                    '--mute-audio',
+                    '--disable-renderer-backgrounding',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows'
+                ]
             });
-
             const page = await browser.newPage();
 
             await page.evaluateOnNewDocument(() => {
