@@ -1,27 +1,63 @@
 (function() {
     console.log('[SilentClient] Plugin Loader Active');
 
-    // 1. Check if we are the Ghost. If so, don't start heartbeats.
-    // The backend injects this variable into the Puppeteer instance.
+    // 1. Ghost Detection: Prevent infinite loops
     if (window.isGhostClient) {
         console.log('[SilentClient] Ghost detected. Heartbeat suppressed.');
         return;
     }
 
-    // 2. Define the heartbeat function
-    async function sendHeartbeat() {
-        try {
-            await fetch('/api/plugins/silent-client/heartbeat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            });
-        } catch (err) {
-            console.warn('[SilentClient] Heartbeat failed (Server might be restarting)');
-        }
-    }
+    // 2. Web Worker Blob: This allows us to run background logic 
+    // without needing a separate physical .js file.
+    const workerCode = `
+        let intervalId = null;
+        
+        self.onmessage = function(e) {
+            if (e.data.action === 'start') {
+                if (intervalId) clearInterval(intervalId);
+                
+                const send = () => {
+                    fetch(e.data.url, { 
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ts: Date.now() })
+                    }).catch(() => {}); // Silent catch to prevent console clutter
+                };
 
-    // 3. Start the loop (Every 2 seconds)
-    // We send one immediately, then start the interval
-    sendHeartbeat();
-    setInterval(sendHeartbeat, 2000);
+                send(); // Initial heartbeat
+                intervalId = setInterval(send, e.data.interval);
+            } else if (e.data.action === 'stop') {
+                clearInterval(intervalId);
+            }
+        };
+    `;
+
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const worker = new Worker(URL.createObjectURL(blob));
+
+    // 3. Heartbeat Config
+    const config = {
+        action: 'start',
+        url: '/api/plugins/silent-client/heartbeat',
+        interval: 2000 
+    };
+
+    // 4. Intelligent Tab Management
+    // We start the worker immediately.
+    worker.postMessage(config);
+
+    // Optional: If you want to be "polite" to the server, 
+    // you could slow down heartbeats when the tab is hidden, 
+    // but with a Ghost Client system, it's safer to keep them constant.
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            // Wake up immediately on tab focus to ensure the Ghost kills itself fast
+            worker.postMessage(config);
+        }
+    });
+
+    window.addEventListener('beforeunload', () => {
+        worker.postMessage({ action: 'stop' });
+    });
+
 })();
