@@ -17,7 +17,7 @@ A SillyTavern server plugin that maintains a "ghost" headless browser client whe
 2. **Install the plugin**:
    ```bash
    cd SillyTavern/plugins
-   git clone <your-repo-url> silent-client
+   git clone https://github.com/walnutseal1/SilentClient silent-client
    cd silent-client
    npm install
    ```
